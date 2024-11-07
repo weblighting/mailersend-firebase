@@ -6,4 +6,6 @@ module.exports = {
     defaultReplyToEmail: process.env.DEFAULT_REPLY_TO_EMAIL,
     defaultReplyToName: process.env.DEFAULT_REPLY_TO_NAME,
     defaultTemplateId: process.env.DEFAULT_TEMPLATE_ID,
+    mailersendWebhookSigningSecret: process.env.MAILERSEND_WEBHOOK_SIGNING_SECRET,
+    webhookEndpoint: "QhCvGguAbcmu0miL9uk1xUrgZKXxRFAH" || process.env.WEBHOOK_ENDPOINT,
 };

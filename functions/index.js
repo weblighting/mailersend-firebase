@@ -9,12 +9,14 @@
  */
 
 const functions = require('firebase-functions');
+const v1Functions = require('firebase-functions/v1');
 const admin = require('firebase-admin');
 
 const Recipient = require("mailersend").Recipient;
 const EmailParams = require("mailersend").EmailParams;
 const Sender = require("mailersend").Sender;
 const MailerSend = require("mailersend").MailerSend;
+const crypto = require('crypto');
 
 let config = require('./config');
 const logs = require('./logs');
@@ -175,8 +177,12 @@ exports.processDocumentCreated = functions.firestore.document(config.emailCollec
 
   let data = snapshot.data()
   const update = {
+    "sent.error": null,
+    "sent.message_id": null,
+    "sent.state": "PENDING",
+    "delivery.state": "PENDING",
     "delivery.error": null,
-    "delivery.message_id": null,
+    "delivery.message_id": '',
   };
 
   try {
@@ -184,15 +190,16 @@ exports.processDocumentCreated = functions.firestore.document(config.emailCollec
 
     const result = await send(data);
     if (result.status === 202) {
-      update["delivery.state"] = "SUCCESS";
+      update["sent.state"] = "SUCCESS";
+      update["sent.message_id"] = result.messageId || '';
       update["delivery.message_id"] = result.messageId || '';
     } else {
-      update["delivery.state"] = "ERROR";
-      update["delivery.error"] = result.message;
+      update["sent.state"] = "ERROR";
+      update["sent.error"] = result.message;
     }
   } catch (e) {
-    update["delivery.state"] = "ERROR";
-    update["delivery.error"] = e.toString();
+    update["sent.state"] = "ERROR";
+    update["sent.error"] = e.toString();
     logs.error(e);
   }
 
@@ -200,3 +207,64 @@ exports.processDocumentCreated = functions.firestore.document(config.emailCollec
 
   logs.end(update)
 })
+
+
+// Subscribe to following events: activity.delivered activity.soft_bounced, activity.hard_bounced
+exports.webhook = v1Functions.https.onRequest(async (req, res) => {
+  if(!req.rawBody || !config.mailersendWebhookSigningSecret|| !req.headers['mailersend-signature']){
+    return res.status(500).send("Something is missing")
+  }
+  if(!verifySignature(req.rawBody, config.mailersendWebhookSigningSecret, req.headers['mailersend-signature'])){
+    return res.status(403).send("Invalid signature")
+  }
+
+  const body = req.body;
+  initialize()
+  if(!body) throw new Error("Webhook data not found")
+  if(!body.type) throw new Error("Webhook type not found")
+  logs.log("Webhook received", true)
+  logs.startWebHook(body.type)
+  logs.log(JSON.stringify(body,null,2), true)
+  const emailId = body.data.email.message.id
+  if(!emailId) throw new Error("Email id not found in the webhook data")
+  const status = body.data.email.status || 'ERROR'
+
+  const snapshot = await admin.firestore().collection(config.emailCollection).where("sent.message_id", "==", emailId).limit(1).get()
+  if(snapshot.empty) throw new Error("Email not found in the database")
+    
+  const doc = snapshot.docs[0]
+
+  if(doc.data().delivery?.state == doc.data().delivery?.state) {
+    logs.log("Email already processed")
+    return res.send("OK")
+  }
+
+  const update = {
+    "delivery.state": "PENDING",
+    "delivery.error": null,
+    "message_id": emailId
+  };
+
+  if(status === "sent") {
+    update["delivery.state"] = "SUCCESS";
+  } else {
+    update["delivery.state"] = "ERROR";
+    update["delivery.error"] = `[${body.data.type}] ${body.data.morph?.reason}` || "Unknown error";
+  }
+
+  await doc.ref.update(update)
+  logs.end("Webhook processed")
+  res.send("OK")
+})
+
+function verifySignature(requestContent, signingSecret, signature) {
+  const computedSignature = crypto
+    .createHmac('sha256', signingSecret)
+    .update(requestContent)
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, 'utf8'),
+    Buffer.from(computedSignature, 'utf8')
+  );
+}

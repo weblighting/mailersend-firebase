@@ -15,10 +15,20 @@
  */
 
 const { logger } = require("firebase-functions");
+const fs = require("fs");
 
 module.exports = {
     start: () => {
         logger.log("Starting sending email");
+    },
+    startWebHook: (event) => {
+        logger.log("Starting webhook ", event);
+    },
+    log: (message, permanent = false) => {
+        logger.log(message);
+        if (permanent) {
+            fs.appendFileSync("log.txt", message + "\n");
+        }
     },
     error: (message) => {
         logger.error(message);
